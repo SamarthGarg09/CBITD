@@ -18,31 +18,23 @@ import numpy as np
 import random
 import os
 
-######################################################################
 ##################### SET SEED #######################
 def set_seed(seed):
-    # Python's built-in random generator
     random.seed(seed)
     
-    # NumPy's random generator
     np.random.seed(seed)
     
-    # PyTorch's random generator (CPU)
     torch.manual_seed(seed)
     
-    # If you are using GPUs
     if torch.cuda.is_available():
         torch.cuda.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)  # If you're using multiple GPUs
+        torch.cuda.manual_seed_all(seed)  
         
-    # Make CUDA deterministic (may impact performance)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
 set_seed(42)
-######################################################################
 
-# Configurations
 # model_name = "roberta-base"
 model_name = "saved_target_model_aug"
 # model_name = 'saved_target_model'
@@ -72,7 +64,6 @@ def tokenize(example):
 
 
 
-# Load your datasets
 df = pd.read_csv("dataset/train_big.csv")
 df_aug = pd.read_csv("dataset/augmented_toxic_no_profane_train.csv").tail(1000)
 
@@ -89,28 +80,21 @@ df_test = pd.read_csv("dataset/toxicity_en.csv")
 df_test.columns = ['comment_text', 'toxicity']
 
 df_test = df_test.dropna(subset=['toxicity'])
-# Map the values in the 'toxicity' column of df_test based on its own values
 df_test['toxicity'] = df_test['toxicity'].map({'Toxic': 1, 'Not Toxic': 0})
 
-# Check for any missing or invalid values
 df_test = df_test.dropna(subset=['toxicity'])
 # print(df.columns)
 # print(df_test.columns)
 
-# Separate label 0 (non-toxic) and label 1 (toxic) samples
 label_0_samples = df[df['toxicity'] == 0].sample(2000, random_state=42)
 label_1_samples = df[df['toxicity'] == 1].sample(1000, random_state=42)
 
-# Concatenate the two datasets to form a new balanced dataset
 balanced_df = pd.concat([label_0_samples, label_1_samples])
 
-# Shuffle the balanced dataset
 balanced_df = pd.concat([balanced_df, df_aug])
 balanced_df = balanced_df.sample(frac=1, random_state=42).reset_index(drop=True)
-# Convert the balanced pandas DataFrame back to HuggingFace Dataset
 balanced_dataset = Dataset.from_pandas(balanced_df)
 
-# Shuffle the dataset again and select the first 4000 samples
 dataset = balanced_dataset.shuffle(seed=42).select(range(4000))
 dev_dataset = Dataset.from_pandas(df_dev)
 test_dataset = Dataset.from_pandas(df_test)
@@ -200,26 +184,19 @@ cm = confusion_matrix(labels, predictions)
 print("Confusion Matrix:\n", cm)
 predictions = trainer.predict(test_dataset).predictions
 
-# Convert logits to class labels (0 or 1)
 predictions = predictions.argmax(axis=1)
 
-# Assuming the test_dataset is a HuggingFace Dataset object, you can convert it to a pandas DataFrame
 test_df = pd.DataFrame(test_dataset)
 
-# Add the predictions and true labels to the DataFrame
 test_df['predicted_label'] = predictions
 test_df['true_label'] = test_df['labels']
 
-# Identify misclassified samples (where predicted_label != true_label)
 misclassified_samples = test_df[test_df['predicted_label'] != test_df['true_label']]
 
-# Print or save the misclassified samples
 print("Misclassified samples:\n", misclassified_samples)
 
-# Optionally, save misclassified samples to a CSV file for further analysis
 misclassified_samples.to_csv('misclassified_samples.csv', index=False)
 
-# Print confirmation message
 print("Misclassified samples saved to 'misclassified_samples.csv'.")
 
 # model.save_pretrained("./saved_target_model_aug")

@@ -143,9 +143,6 @@ ALL_WORD_LISTS = {
     ]
 }
 
-
-
-
 CONCEPT_LABELS = ['obscene', 'threat', 'sexual_explicit', 'insult', 'identity_attack']
 
 class X2YModel(nn.Module):
@@ -177,20 +174,16 @@ class X2CModel(nn.Module):
 def load_and_preprocess_data(word_list):
     df = pd.read_csv('./dataset/test.csv')
 
-    # Filter based on provided word list
     pattern = '|'.join(word_list)
     df_filtered = df[df['comment_text'].str.contains(pattern, case=False, na=False)].copy()
-    # Binary transformation for the 'toxicity' column
     df_filtered['toxicity'] = (df_filtered['toxicity'] > 0.5).astype(int)
 
-    # Process other columns except 'obscene' and 'insult'
     for column in df_filtered.columns:
         if column not in ['comment_text', 'toxicity']:
             df_filtered[column] = (df_filtered[column] > 0.0).astype(int)
         elif column == 'toxicity':
             df_filtered[column] = (df_filtered[column] > 0.5).astype(int)
 
-    # Drop unnecessary columns (including 'obscene', 'insult')
     columns_to_drop = CONCEPT_LABELS + ['severe_toxicity']
     existing_columns_to_drop = [col for col in columns_to_drop if col in df_filtered.columns]
     df_filtered.drop(columns=existing_columns_to_drop, inplace=True)
@@ -298,7 +291,6 @@ def save_profanity_counts(df_train, word_list_name, word_list):
         profanity_counts[word] = count
     df_profanity_counts = pd.DataFrame(list(profanity_counts.items()), columns=['Profanity_Word', 'Count'])
     
-    # Save the profanity counts DataFrame
     output_folder = f'output/{word_list_name}/profanity_counts'
     os.makedirs(output_folder, exist_ok=True)
     df_profanity_counts.to_csv(f'{output_folder}/{word_list_name}_profanity_counts.csv', index=False)
@@ -322,11 +314,10 @@ def plot_top_concepts(final_df, concept_labels, word_list_name):
 
     plt.figure(figsize=(10, 6))
     sns.barplot(x=top_concepts.index, y=top_concepts.values)
-    # plt.title(f"{word_list_name}")
-    plt.xlabel("Concept", fontsize=20)  # Increase font size for X-axis label
-    plt.ylabel("WCA scores", fontsize=20)  # Increase font size for Y-axis label
-    plt.xticks(rotation=45, fontsize=18)  # Increase font size for tick labels
-    plt.yticks(fontsize=18)  # Increase font size for Y-axis ticks
+    plt.xlabel("Concept", fontsize=20)  
+    plt.ylabel("WCA scores", fontsize=20)  
+    plt.xticks(rotation=45, fontsize=18) 
+    plt.yticks(fontsize=18) 
     plt.tight_layout()
     output_folder = f'output/{word_list_name}/concept_plots'
     os.makedirs(output_folder, exist_ok=True)
@@ -340,43 +331,33 @@ for word_list_name, word_list in ALL_WORD_LISTS.items():
     df_filtered.to_csv('final_output/' + word_list_name + '.csv', index=False)
     tokenizer, x2y_model, x2c_model, cg = setup_models_and_cg()
     print(f"Processing word list: {word_list_name}")
-    
-    # Step 1: Calculate concept gradients and final DataFrame
+ 
     results = process_data_and_calculate_gradients(df_filtered, word_list, tokenizer, x2y_model, x2c_model, cg)
     final_df = create_final_dataframe(results)
 
-    # Step 2: Save profanity counts and generate word cloud
     df_profanity_counts = save_profanity_counts(df_train, word_list_name, word_list)
     create_wordcloud(df_profanity_counts, word_list_name)
 
-    # Step 3: Plot top concepts
     plot_top_concepts(final_df, CONCEPT_LABELS, word_list_name)
 import os
 import shutil
 
-# Define source root directory and destination directories
 source_root = './output'
 dest_wordclouds = './final_output/word_clouds'
 dest_plots = './final_output/plots'
 dest_csv = './final_output/csv_dumps'
 
-# Create destination directories if they don't exist
 os.makedirs(dest_wordclouds, exist_ok=True)
 os.makedirs(dest_plots, exist_ok=True)
 os.makedirs(dest_csv, exist_ok=True)
 
-# Walk through each folder inside the source directory
 for root, dirs, files in os.walk(source_root):
     for file in files:
         file_path = os.path.join(root, file)
-        
-        # Check and move word cloud files
+
         if 'wordcloud' in file.lower():
             shutil.move(file_path, os.path.join(dest_wordclouds, file))
-        
-        # Check and move plot files
-        
-        # Check and move CSV dump files
+
         elif file.endswith('.csv'):
             shutil.move(file_path, os.path.join(dest_csv, file))
         else:

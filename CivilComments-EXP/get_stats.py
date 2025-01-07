@@ -40,11 +40,9 @@ class X2CModel(nn.Module):
             )
         return self.model.classifier(outputs.last_hidden_state)
 
-# Instantiate the models
 x2y_model = X2YModel().to(device)
 x2c_model = X2CModel().to(device)
 
-# Define the forward functions
 def forward_func(embeddings, attention_mask):
     output = x2y_model(inputs_embeds=embeddings, attention_mask=attention_mask)
     return output
@@ -53,7 +51,6 @@ def concept_forward_func(embeddings, attention_mask):
     output = x2c_model(inputs_embeds=embeddings, attention_mask=attention_mask)
     return output
 
-# Instantiate the ConceptGradients object
 cg = ConceptGradients(
     forward_func,
     concept_forward_func=concept_forward_func,
@@ -64,7 +61,6 @@ cg = ConceptGradients(
 def calculate_concept_gradient_for_sentence(
     sentence, target_index=None, concept_index=None, mode='chain_rule_independent'
 ):
-    # Tokenize the input sentence
     inputs = tokenizer(
         sentence, return_tensors='pt', truncation=True, max_length=512, padding='max_length'
     )
@@ -79,14 +75,12 @@ def calculate_concept_gradient_for_sentence(
     attention_mask = attention_mask.float()
     attention_mask.requires_grad_(True)
     
-    # Predict the target class if not provided
     if target_index is None:
         with torch.no_grad():
             logits = x2y_model(input_ids=input_ids, attention_mask=attention_mask)
             probs = torch.softmax(logits, dim=-1)
             target_index = torch.argmax(probs, dim=-1).item()
     
-    # Calculate concept gradient
     attr = cg.attribute(
         (embeddings, attention_mask),
         mode=mode,
@@ -97,20 +91,16 @@ def calculate_concept_gradient_for_sentence(
         concept_layer_name='roberta.encoder.layer.11.output.dense',
     )
     
-    # Get concept logits and probabilities
     with torch.no_grad():
         concept_logits = x2c_model(input_ids=input_ids, attention_mask=attention_mask)
         concept_probs = torch.sigmoid(concept_logits).cpu()
     
-    # Get target logits and probabilities
     with torch.no_grad():
         target_logits = x2y_model(input_ids=input_ids, attention_mask=attention_mask)
         target_probs = torch.softmax(target_logits, dim=-1).cpu()
     
-    # Get the predicted class
     predicted_class = torch.argmax(target_probs, dim=-1).item()
     
-    # Convert probabilities to NumPy arrays if needed
     concept_probs = concept_probs.numpy()
     target_probs = target_probs.numpy()
     
@@ -135,14 +125,12 @@ def main():
             break
         result = calculate_concept_gradient_for_sentence(sentence, target_index=target_idx)
         
-        # Extract results
         concept_gradient = result['concept_gradient']
         concept_probs = result['concept_probs']
         target_probs = result['target_probs']
         predicted_class = result['predicted_class']
         concept_labels = result['concept_labels']
         
-        # Print the results
         print(f"\nSentence: {sentence}")
         print(f"Predicted Class: {predicted_class} (0: Non-toxic, 1: Toxic)")
         print("Target Probabilities:")

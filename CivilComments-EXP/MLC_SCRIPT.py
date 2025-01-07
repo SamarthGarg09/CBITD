@@ -1,53 +1,36 @@
-# %%
 import torch
 from torch.utils.data import Dataset, DataLoader
 from transformers import RobertaForSequenceClassification, AutoTokenizer
-
-# optimizer, scheduler
 from torch.optim import AdamW
 from transformers import get_linear_schedule_with_warmup
-
 from torch import nn
-
-# multi-label classification metrics
 from sklearn.metrics import f1_score, accuracy_score, precision_score, recall_score
-
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-
-#tqdm
 from tqdm.auto import tqdm
-#for ignoring warnings
 import warnings
 warnings.filterwarnings("ignore")
 import os
 os.environ['TOKENIZERS_PARALLELISM'] = "false"
 
-# %%
 df = pd.read_csv('dataset/train.csv')
 dev = pd.read_csv('dataset/dev.csv')
 test = pd.read_csv('dataset/test.csv')
 df.head()
 
-# %%
-# show full text
 pd.set_option('display.max_colwidth', None)
 df.sample(5)
 
-# %%
 df.drop(columns=['id', 'severe_toxicity', 'toxicity'], inplace=True)
 dev.drop(columns=['id', 'severe_toxicity', 'toxicity'], inplace=True)
 test.drop(columns=['id', 'severe_toxicity', 'toxicity'], inplace=True)
 df.shape
 
-# %%
 cols = df.columns[1:]
 cols
 
-# %%
-# hyperparameters
 NUM_LABELS=5
 MAX_LENGTH=512
 BATCH_SIZE=64
@@ -58,8 +41,6 @@ NUM_TRAIN_EPOCHS=5
 NUM_LOG_STEPS=2250
 NUM_SAVE_STEPS=2250
 
-# %%
-# Multi-label dataset
 class ToxicityDataset(Dataset):
     def __init__(self, df, tokenizer, max_len):
         self.df = df
@@ -89,21 +70,16 @@ tokenizer = AutoTokenizer.from_pretrained(model_name)
 dataset = ToxicityDataset(df, tokenizer, 128)
 dataset[0]
 
-# %%
 train_dataset = ToxicityDataset(df, tokenizer, MAX_LENGTH)
 dev_dataset = ToxicityDataset(dev, tokenizer, MAX_LENGTH)
 test_dataset = ToxicityDataset(test, tokenizer, MAX_LENGTH)
 
-# dataloaders
 train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4)
 dev_loader = DataLoader(dev_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4)
 test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4)
 
-# %%
 len(train_loader)
 
-# %%
-# model, optimizer, scheduler, loss_fn
 model = RobertaForSequenceClassification.from_pretrained("saved_target_model", num_labels=NUM_LABELS, problem_type="multi_label_classification", ignore_mismatched_sizes=True)
 model.to('cuda')
 target_layer = 'roberta.encoder.layer.10'
@@ -124,11 +100,9 @@ optimizer = AdamW(filter(lambda p:p.requires_grad, model.parameters()), lr=LR)
 NUM_TRAIN_STEPS=len(train_loader)*NUM_TRAIN_EPOCHS
 scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=NUM_WARMUP_STEPS, num_training_steps=NUM_TRAIN_STEPS)
 
-# %%
 TOTAL_STEPS = len(train_loader) * NUM_TRAIN_EPOCHS
 TOTAL_STEPS
 
-# %%
 import torch
 import numpy as np
 from tqdm import tqdm
@@ -136,91 +110,60 @@ from tqdm import tqdm
 TOTAL_STEPS = len(train_loader) * NUM_TRAIN_EPOCHS
 loss_i = []
 val_loss, val_acc = [], []
-saved_models = []  # Track best model checkpoints
-step = 0  # Initialize step counter
-train_iter = iter(train_loader)  # Create an iterator from the train_loader
+saved_models = []
+step = 0
+train_iter = iter(train_loader)
 
-# Total number of training steps
 for step in tqdm(range(TOTAL_STEPS)):
-    
-    # Fetch next batch from the data loader. If we reach the end of the loader, restart it.
     try:
         batch = next(train_iter)
     except StopIteration:
-        train_iter = iter(train_loader)  # Restart the iterator
+        train_iter = iter(train_loader)
         batch = next(train_iter)
     
     model.train()
     optimizer.zero_grad()
-
-    # Move batch data to the GPU
     batch = {k: v.to('cuda') for k, v in batch.items()}
-    
-    # Forward pass
     logits = model(batch['input_ids'], attention_mask=batch['attention_mask']).logits
     loss = criterion(logits, batch['labels'])
-    
-    # Backward pass and optimization step
     loss.backward()
     optimizer.step()
     scheduler.step()
-    
-    # Append the current training loss
     loss_i.append(loss.item())
     
-    # Evaluation and logging every NUM_LOG_STEPS
     if step % NUM_LOG_STEPS == 0 and step > 0:
-        # Switch to evaluation mode
         model.eval()
         total_val_loss = 0
-        correct_predictions = np.zeros(len(cols))  # Assuming `cols` are your labels
+        correct_predictions = np.zeros(len(cols))
         total_predictions = np.zeros(len(cols))
         
-        # Evaluation loop
         with torch.no_grad():
             for batch in tqdm(dev_loader, leave=False, total=len(dev_loader)):
                 batch = {k: v.to('cuda') for k, v in batch.items()}
                 logits = model(batch['input_ids'], attention_mask=batch['attention_mask']).logits
                 loss = criterion(logits, batch['labels'])
                 total_val_loss += loss.item()
-                
-                # Convert predictions and labels to CPU for easier manipulation
                 preds = torch.sigmoid(logits).cpu().numpy()
                 labels = batch['labels'].cpu().numpy()
-                
-                # Vectorized accuracy calculation
                 preds = (preds > 0.5)
                 correct_predictions += np.sum(preds == labels, axis=0)
                 total_predictions += labels.shape[0]
         
-        # Calculate validation metrics
         val_loss_epoch = total_val_loss / len(dev_loader)
         accuracy = correct_predictions / total_predictions
-        
-        # Append metrics
         val_loss.append(val_loss_epoch)
         val_acc.append(accuracy)
-        
-        # Log the current training and validation metrics
         print(f"Step {step} | Training Loss: {loss_i[-1]:.4f} | Validation Loss: {val_loss_epoch:.4f} | Validation Accuracy: {accuracy}")
-        
-        # Switch back to training mode
         model.train()
     
-    # Save checkpoints every NUM_SAVE_STEPS
     if step % NUM_SAVE_STEPS == 0 and step > 0:
-        # Save model if it's one of the best 2
         if len(saved_models) < 2 or val_loss_epoch < max(saved_models, key=lambda x: x[1])[1]:
             model_save_path = f'model_checkpoint_step_{step}.pt'
             torch.save(model.state_dict(), model_save_path)
             saved_models.append((model_save_path, val_loss_epoch))
-            saved_models = sorted(saved_models, key=lambda x: x[1])[:2]  # Keep only the top 2 models
-            
+            saved_models = sorted(saved_models, key=lambda x: x[1])[:2]
             print(f"Model checkpoint saved at {model_save_path}")
 
-
-# %%
-# test the model
 from collections import defaultdict
 
 model.eval()
@@ -237,10 +180,8 @@ with torch.no_grad():
         preds = torch.sigmoid(logits).cpu().numpy()
         labels = batch['labels'].cpu().numpy()
         preds = (preds > 0.5)
-        
         correct_predictions += (preds==labels).sum(axis=0)
         total_predictions += labels.shape[0]
-        
         decoded_text = tokenizer.batch_decode(batch['input_ids'], skip_special_tokens=True)
         samples['text'].extend(decoded_text)
         samples['labels'].extend(labels)
@@ -248,14 +189,10 @@ with torch.no_grad():
         
     total_loss = test_loss / len(test_loader)
     total_accuracy = correct_predictions / total_predictions
-    
     print(f"Test Loss: {total_loss:.4f} | Test Accuracy: {total_accuracy}")
-    
 
-# %%
 import random
 
 random_100 = random.sample(list(zip(samples['text'], samples['labels'], samples['preds'])), 100)
-
 dump = pd.DataFrame(random_100, columns=['text', 'labels', 'preds'])
 dump.to_csv('random_100.csv', index=False)

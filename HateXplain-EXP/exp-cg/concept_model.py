@@ -4,50 +4,40 @@ from transformers import EarlyStoppingCallback
 from datasets import Dataset, load_dataset, DatasetDict, load_from_disk
 from sklearn.metrics import accuracy_score, f1_score, classification_report
 from sklearn.utils.class_weight import compute_class_weight
+import matplotlib.pyplot as plt
+from sklearn.metrics import confusion_matrix
+import seaborn as sns
 import pandas as pd
 import numpy as np
 import warnings
 import random
 import os
-######################################################################
-##################### SET SEED #######################
+
 def set_seed(seed):
-    # Python's built-in random generator
     random.seed(seed)
-    
-    # NumPy's random generator
     np.random.seed(seed)
-    
-    # PyTorch's random generator (CPU)
     torch.manual_seed(seed)
-    
-    # If you are using GPUs
     if torch.cuda.is_available():
         torch.cuda.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)  # If you're using multiple GPUs
-        
-    # Make CUDA deterministic (may impact performance)
+        torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
-# Example usage
 set_seed(42)
-######################################################################
 
 warnings.filterwarnings("ignore")
 
-# Configurations
-model_name = "./saved_concept_model"
+model_name = "./concept_model_he"
 batch_size = 64
-num_epochs = 5
+num_epochs = 15
 learning_rate = 2e-5
-num_labels = 5
+num_labels = 3
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 import torch.nn as nn
 
 class WeightedBCEWithLogitsLoss(nn.Module):
     def __init__(self, weights):
-        super(WeightedBCEWithLogitsLoss, self).__init__()
+        super().__init__()
         self.weights = weights
         self.bce = nn.BCEWithLogitsLoss(reduction='none')
     
@@ -56,36 +46,31 @@ class WeightedBCEWithLogitsLoss(nn.Module):
         weighted_loss = loss * self.weights
         return weighted_loss.mean()
         
-# Load the tokenizer
-tokenizer = AutoTokenizer.from_pretrained(model_name)
+tokenizer = AutoTokenizer.from_pretrained('roberta-base')
 
 def tokenize(example):
-    
-    student_inputs = tokenizer(example['comment_text'], truncation=True, max_length=512)
-    
+    student_inputs = tokenizer(example['post_text'], truncation=True, max_length=512)
     labels = torch.tensor([
-        example['obscene'], 
-        example['sexual_explicit'], 
-        example['identity_attack'], 
-        example['insult'], 
-        example['threat']
+        example['Race'], 
+        example['Religion'], 
+        example['Gender'], 
     ], dtype=torch.float32)
     labels = labels.T 
-    
     return {
         'input_ids': student_inputs['input_ids'],
         'attention_mask': student_inputs['attention_mask'],
         'labels': labels
     }
 
-df = pd.read_csv("dataset/train_big.csv")
-df = df.drop(columns=['toxicity', 'severe_toxicity', 'id'])
-df_dev = pd.read_csv("dataset/dev.csv")
-df_dev = df_dev.drop(columns=['toxicity', 'severe_toxicity', 'id'])
-df_test = pd.read_csv("dataset/test.csv")
-df_test = df_test.drop(columns=['toxicity', 'severe_toxicity', 'id'])
+df_train = pd.read_csv("../data/hatexplain_train.csv")
+df_dev = pd.read_csv("../data/hatexplain_val.csv")
+df_test = pd.read_csv("../data/hatexplain_test.csv")
 
-labels = np.array(df[['obscene', 'sexual_explicit', 'identity_attack', 'insult', 'threat']])
+df_train = df_train.drop(columns=['label', 'post_id', 'Miscellaneous', 'Sexual Orientation'])
+df_dev = df_dev.drop(columns=['label', 'post_id', 'Miscellaneous', 'Sexual Orientation'])
+df_test = df_test.drop(columns=['label', 'post_id', 'Miscellaneous', 'Sexual Orientation'])
+
+labels = np.array(df_train[['Race', 'Religion', 'Gender']])
 
 class_weights = []
 for i in range(num_labels):
@@ -94,28 +79,33 @@ for i in range(num_labels):
         classes=np.unique(labels[:, i]),
         y=labels[:, i]
     )
+    print(weights)
     class_weights.append(weights[1])  
+class_weights[2] = class_weights[2] * 2.0 
+
+from torch.utils.data import WeightedRandomSampler
+
+def create_weighted_sampler(dataset, label_idx=2):
+    gender_labels = np.array(dataset['Gender'])
+    class_sample_count = np.array([len(np.where(gender_labels == t)[0]) for t in [0, 1]])
+    weight_per_class = 1.0 / class_sample_count
+    sample_weights = np.array([weight_per_class[int(g)] for g in gender_labels])
+    sample_weights = torch.from_numpy(sample_weights).float()
+    sampler = WeightedRandomSampler(weights=sample_weights, num_samples=len(sample_weights), replacement=True)
+    return sampler
 
 class_weights = torch.tensor(class_weights).to(device)
 
-dataset = Dataset.from_pandas(df)
+dataset = Dataset.from_pandas(df_train)
 dev_dataset = Dataset.from_pandas(df_dev)
 test_dataset = Dataset.from_pandas(df_test)
 
 full_ds = DatasetDict({'train': dataset, 'dev': dev_dataset, 'test': test_dataset})
-# Check if the tokenized dataset already exists
-if os.path.exists('tokenized_dataset_concept_model'):
-    # Load the tokenized dataset from disk
-    tokenized_ds = load_from_disk('tokenized_dataset_concept_model')
-    print("Loaded tokenized dataset from disk.")
-else:
-    # Tokenize and save the dataset
-    print("Tokenizing the dataset...")
-    tokenized_ds = full_ds.map(tokenize, batched=True)
-    tokenized_ds.save_to_disk('tokenized_dataset_concept_model')
-    print("Tokenized dataset saved to disk.")
-    
-# tokenized_ds = full_ds.map(tokenize, batched=True)
+train_sampler = create_weighted_sampler(dataset)
+
+tokenized_ds = full_ds.map(tokenize, batched=True)
+print("Tokenized dataset saved to disk.")
+
 tokenized_ds.set_format(type='torch', columns=['input_ids', 'attention_mask', 'labels'])
 
 print(f"Tokenized dataset example: {tokenized_ds['train'][0]}")
@@ -125,7 +115,7 @@ validation_dataset = tokenized_ds['dev']
 test_dataset = tokenized_ds['test']
 
 model = RobertaForSequenceClassification.from_pretrained(
-    model_name,
+    'target_model_hate_explain/checkpoint-150',
     num_labels=num_labels,
     ignore_mismatched_sizes=True,
     problem_type="multi_label_classification"
@@ -170,15 +160,15 @@ class WeightedTrainer(Trainer):
 def compute_metrics(eval_pred):
     predictions, labels = eval_pred
     predictions = torch.sigmoid(torch.tensor(predictions)).cpu().numpy()
-    predictions = (predictions > 0.5).astype(int)  # Binarize the predictions
+    predictions = (predictions > 0.5).astype(int)
     accuracy = (predictions == labels).mean()
     f1 = f1_score(labels, predictions, average='macro')
     return {"f1": f1, "accuracy": accuracy}
 
 training_args = TrainingArguments(
-    output_dir="./results_big_train",
+    output_dir=model_name,
     eval_strategy="steps",
-    eval_steps=4500,
+    eval_steps=50,
     learning_rate=learning_rate,
     per_device_train_batch_size=batch_size,
     per_device_eval_batch_size=batch_size,
@@ -186,13 +176,24 @@ training_args = TrainingArguments(
     weight_decay=0.01,
     logging_dir='./logs',
     save_total_limit=1,
-    save_steps=4500,  
+    save_steps=100,  
     load_best_model_at_end=True,  
     metric_for_best_model="f1",
-    logging_steps=4500,
+    logging_steps=100,
     report_to='none',
     fp16=True
 )
+
+def get_train_dataloader_custom(trainer):
+    train_sampler = create_weighted_sampler(trainer.train_dataset, label_idx=2)
+    return torch.utils.data.DataLoader(
+        trainer.train_dataset,
+        batch_size=trainer.args.train_batch_size,
+        sampler=train_sampler,
+        collate_fn=trainer.data_collator,
+        drop_last=False,
+        pin_memory=True
+    )
 
 trainer = WeightedTrainer(
     model=model,
@@ -205,7 +206,9 @@ trainer = WeightedTrainer(
     class_weights=class_weights 
 )
 
-# trainer.train()
+trainer.get_train_dataloader = lambda: get_train_dataloader_custom(trainer)
+
+trainer.train()
 
 metrics = trainer.evaluate(eval_dataset=test_dataset)
 print(f'Metrics:\n {metrics}')
@@ -219,11 +222,8 @@ labels = np.array(test_dataset['labels'])
 print("Classification Report:\n")
 print(classification_report(labels, predictions, target_names=[f'Label {i}' for i in range(num_labels)]))
 
-import matplotlib.pyplot as plt
-from sklearn.metrics import confusion_matrix
-import seaborn as sns
-
-def plot_confusion_matrix(y_true, y_pred, labels, label_idx, class_name, output_dir="./confusion_matrices"):
+def plot_confusion_matrix(y_true, y_pred, labels, label_idx, class_name, output_dir="./concept_model_cm"):
+    print(y_true.shape, y_pred.shape)
     cm = confusion_matrix(y_true[:, label_idx], y_pred[:, label_idx])
     plt.figure(figsize=(6, 4))
     sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', cbar=False)
@@ -234,8 +234,6 @@ def plot_confusion_matrix(y_true, y_pred, labels, label_idx, class_name, output_
     plt.show()
     plt.close()  
     
-CONCEPT_LABELS = ['obscene', 'threat', 'sexual_explicit', 'insult', 'identity_attack']
+CONCEPT_LABELS = ['Race', 'Religion', 'Gender']
 for i, class_name in enumerate(CONCEPT_LABELS):
     plot_confusion_matrix(labels, predictions, labels, i, class_name)
-model.save_pretrained("./saved_concept_model")
-tokenizer.save_pretrained("./saved_concept_model")
